@@ -1,2 +1,2 @@
 # UNHIDEM
-A univariate approach to high-dimensional modeling via the EM algorithm
+This repository is designed to run a univariate approach to high-dimensional modeling via the EM algorithm (UNHIDEM).
