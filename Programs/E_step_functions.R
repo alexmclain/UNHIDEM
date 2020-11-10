@@ -13,13 +13,13 @@ E_step_func <- function(beta_t,beta_var,df,adj,alpha,one.sided=FALSE){
   if(!one.sided){
     p_vals <- pt(abs(T_vals),df=df,lower.tail = FALSE)*2
   }else{
-    p_vals <- pt(T_vals,df=N-3,lower.tail = FALSE)
+    p_vals <- pt(T_vals,df=df,lower.tail = FALSE)
   }
   
   ### Estimate the probability of a null
   p_hat  <- pi0est(p_vals,lambda = alpha)$pi0-1/M
   ### Estimate the lfdr
-  delta <- 1-lfdr_T(T=T_vals,pi0=p_hat,trunc=TRUE,monotone = TRUE,adj = adj,df_val = N-3,one.sided = one.sided)$lfdr
+  delta <- 1-lfdr_T(T=T_vals,pi0=p_hat,trunc=TRUE,monotone = TRUE,adj = adj,df_val = df,one.sided = one.sided)$lfdr
   if(one.sided){
     tilde_pos <- norm_trun_func(beta_t,beta_var,side="Pos")
     beta_t <- tilde_pos$beta_tilde

@@ -3,33 +3,40 @@ require(Rcpp)
 
 source("Programs/E_step_functions.R")
 sourceCpp("Programs/UNHIDEM_cpp0_5.cpp")
+sourceCpp("Programs/UNHIDEM_cpp0_5_w_covs.cpp")
 sourceCpp("Programs/LM_by_col.cpp")
+sourceCpp("Programs/LM_w_COVS_by_col.cpp")
 sourceCpp("Programs/Row_sum.cpp")
 sourceCpp("Programs/Col_sum.cpp")
 sourceCpp("Programs/MVM.cpp")
 
 
 
-UNHIDEM1.46 <- function(Y,Z,alpha,ep=1e-8,B=5,adj=3,maxit=1000,one.sided=TRUE,Y_test=NULL,Z_test=NULL,verbose=FALSE,signal=NULL,eta_i=NULL,plot_ind=FALSE){
+UNHIDEM <- function(Y,Z,X=NULL,alpha=0.05,ep=1e-8,B=5,adj=3,maxit=1000,one.sided=TRUE,Y_test=NULL,Z_test=NULL,verbose=FALSE,signal=NULL,eta_i=NULL,plot_ind=FALSE){
   
   M <- dim(Z)[2]
   N <- dim(Z)[1]
-  full_res <- UNHIDEM0.95(Y=Y,Z=Z,alpha,verbose=verbose,signal=signal,maxit=maxit,eta_i=eta_i,one.sided=one.sided,ep=ep,B=B,adj=adj,plot_ind=plot_ind,Y_test=Y_test,Z_test=Z_test)
+  if(!is.null(X)){X <- as.matrix(X)}
+  full_res <- UNHIDEM0.96(Y=Y,Z=Z,X=X,alpha,verbose=verbose,signal=signal,maxit=maxit,eta_i=eta_i,one.sided=one.sided,ep=ep,B=B,adj=adj,plot_ind=plot_ind,Y_test=Y_test,Z_test=Z_test)
   res <- list(full_res=full_res, total_iter=full_res$count)
   return(res)
 }
 
 
-UNHIDEM0.95 <- function(Y,Z,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.sided=TRUE,ep=1e-8,B=5,adj=NULL,plot_ind=FALSE,Y_test=NULL,Z_test=NULL){
+UNHIDEM0.96 <- function(Y,Z,X=NULL,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.sided=TRUE,ep=1e-8,B=5,adj=NULL,plot_ind=FALSE,Y_test=NULL,Z_test=NULL,X_test=NULL){
   
   if(is.null(adj)){adj <- 3/(1+1*I(one.sided))}
   
   ##### Setting initial values and initializing outputs ####
   M <- dim(Z)[2]
   N <- dim(Z)[1]
+  if(!is.null(X)){
+    p <- dim(X)[2]
+    beta_X <- rep(0,p)
+    }
   delta <- beta_t <- beta_var <- beta_tilde <- beta_tilde_var <- rep(0,M)
-  W_ast_var <- rep(1,N)
   W_ast    <- rep(0,N)
+  W_ast_var<- W_ast+1
   count <- 0
   conv_check <- 0
   cor_vec <- rep(0,M) 
@@ -45,8 +52,8 @@ UNHIDEM0.95 <- function(Y,Z,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.
     fact <- 1/(count+1)
     
     ### Performing the M-step.
-    if(count==1){LR_update <- LR_cpp(Y,Z)}
-    if(count>1){LR_update <- theta_update_0_5.cpp(Y,Z,W_ast,W_ast_var,delta,beta_tilde,beta_tilde_var,Z_2)}
+    if(count==1){LR_update <- LR_cpp(Y,Z,X)}
+    if(count>1){LR_update <- theta_update_0_5.cpp(Y,Z,X,W_ast,W_ast_var,delta,beta_tilde,beta_tilde_var,Z_2)}
     
     beta_t_new <- LR_update$coef[,2]
     beta_var_new <- LR_update$obs_SE[,2]^2
@@ -58,7 +65,7 @@ UNHIDEM0.95 <- function(Y,Z,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.
     beta_var <- beta_var_new*fact^2 + beta_var*(1-fact)^2 + 2*fact*(1-fact)*cor_vec*sqrt(beta_var_new)*sqrt(beta_var)
     
     ### Performing the E-step.
-    E_step <- E_step_func(beta_t,beta_var,df=N-3,adj=adj,alpha=alpha,one.sided=one.sided)
+    E_step <- E_step_func(beta_t,beta_var,df=N-3-p,adj=adj,alpha=alpha,one.sided=one.sided)
     beta_tilde <- E_step$beta_tilde
     beta_tilde_var <- E_step$beta_tilde_var
     delta <- E_step$delta
@@ -74,7 +81,7 @@ UNHIDEM0.95 <- function(Y,Z,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.
         if((Xt_conv1) > (2-ep)){conv_check <- conv_check+1}
       }
       ### Run calibration model
-      mod <- W_regression(Y,W_ast,W_ast_var + W_ast^2)
+      mod <- W_regression(Y,W_ast,W_ast_var + W_ast^2,X)
       Y_pred <- mod$Y_pred  
     }
     if(var(W_ast)==0){
@@ -86,7 +93,8 @@ UNHIDEM0.95 <- function(Y,Z,alpha,verbose=TRUE,signal,maxit=1000,eta_i=NULL,one.
     if(!is.null(eta_i)){report_pred = mean((eta_i-Y_pred)^2)}
     if(!is.null(Y_test) & !is.null(Z_test)){
       W_W2_test <- W_update_fun(Z_test,Z_2=NULL,E_step$beta_tilde,E_step$beta_tilde_var,E_step$delta)
-      Y_pred_test <- cbind(1,W_W2_test$W_ast)%*%mod$coef
+      
+      Y_pred_test <- cbind(1,W_W2_test$W_ast,X_test)%*%mod$coef
       report_pred = mean((Y_test-Y_pred_test)^2)
     }
 
@@ -169,32 +177,37 @@ MTR <- function(E_step,alpha,signal=NULL){
 }
 
 
-LR_cpp <- function(Y_dat,BR_dat){
+LR_cpp <- function(Y_dat,BR_dat,X=NULL){
   
   N <- length(Y_dat)
-  LRcpp <- LM_by_col(Y_dat,BR_dat)
+  if(!is.null(X)){
+  p <- ncol(X)
+  LRcpp <- LM_w_COVS_by_col(Y_dat,BR_dat,as.matrix(X))
+  }else{
+    p <- 0
+    LRcpp <- LM_by_col(Y_dat,BR_dat)
+  }
+  t_val <- LRcpp$Coefficients[,2]/LRcpp$StdErr[,2]
+  p_val <- pt(t_val,df=N-3-p,lower.tail = FALSE)
   
-  X_var2 <- LRcpp$X_var
-  mul <- LRcpp$mul
-  R_sq <- LRcpp$R_sq
-  t_val <- LRcpp$t_val
-  p_val <- pt(t_val,df=N-3,lower.tail = FALSE)
-  pred_SE <- 1/(sqrt(X_var2*(1-R_sq))) 
-  
-  ret <- list(coef = LRcpp$Coefficients,obs_SE = LRcpp$StdErr,T_val = t_val, p_val = p_val, pred_SE=pred_SE,mul=mul,X_mean2=LRcpp$X_mean2,sig_vec = LRcpp$sig)
+  ret <- list(coef = LRcpp$Coefficients,obs_SE = LRcpp$StdErr,T_val = t_val, p_val = p_val,sig_vec = LRcpp$sig)
   
   return(ret)
 }
 
-theta_update_0_5.cpp <- function(Y_dat,BR_dat,W_ast,W_ast_var,delta,beta_vec,beta_var,BR_dat2){
+theta_update_0_5.cpp <- function(Y_dat,BR_dat,X,W_ast,W_ast_var,delta,beta_vec,beta_var,BR_dat2){
   # This funcion updates all of the theta estimates the fast way.
   
   N <- length(Y_dat)
-  
-  LRcpp <- UNHIDEM_cpp0_5(Y_dat,BR_dat,W_ast,W_ast_var,delta,beta_vec,beta_var,BR_dat2)
-  
+  if(!is.null(X)){
+    p <- ncol(X)
+    LRcpp <- UNHIDEM_cpp0_5_w_covs(Y_dat,BR_dat,W_ast,W_ast_var,delta,beta_vec,beta_var,BR_dat2,as.matrix(X))
+  }else{
+    p <- 0
+    LRcpp <- UNHIDEM_cpp0_5(Y_dat,BR_dat,W_ast,W_ast_var,delta,beta_vec,beta_var,BR_dat2)
+  }
   t_val <- LRcpp$T_statistics
-  p_val <- pt(t_val[,2],df=N-3,lower.tail = FALSE)
+  p_val <- pt(t_val[,2],df=N-3-p,lower.tail = FALSE)
   
   ret <- list(coef = LRcpp$Coefficients,obs_SE = LRcpp$StdErr,T_val = t_val, p_val = p_val,log_like=LRcpp$Log_like,sig_vec = LRcpp$Sigma)
   
@@ -235,9 +248,9 @@ norm_trun_func <- function(mu,var,side="Pos")
 }
 
 
-W_regression <- function(Y_dat,W,W2){
+W_regression <- function(Y_dat,W,W2,X){
   
-  Wmat <- cbind(1,W)
+  Wmat <- cbind(1,W,X)
   WWpr <- t(Wmat)%*%Wmat
   WWpr[2,2] <- sum(W2)
   N <- length(Y_dat)
@@ -253,7 +266,7 @@ W_regression <- function(Y_dat,W,W2){
     VCV = RSS/N*t(WWpr_inv)%*%(t(Wmat)%*%Wmat)%*%WWpr_inv
   }
   if(det(WWpr)==0){
-    final_mod <- lm(Y_dat~W)
+    final_mod <- lm(Y_dat~0+Wmat)
     beta_w <- as.numeric(final_mod$coefficients)
     beta_w[is.na(beta_w)] <- 0
     Y_pred <- as.numeric(final_mod$fitted.values)
@@ -309,7 +322,7 @@ report_func <- function(count,E_step,MTR_res,Xt_conv1,signal_track,report_pred){
   }
 }
 
-prediction.unhidem <- function(full_res,Y,Z,alpha=NULL,Z_2=NULL){
+prediction.unhidem <- function(full_res,Y,Z,X=NULL,alpha=NULL,Z_2=NULL){
   E_step <- full_res$E_step
   mod <- full_res$Calb_mod
   if(is.null(Z_2)){Z_2 <- Z*Z}
@@ -318,8 +331,11 @@ prediction.unhidem <- function(full_res,Y,Z,alpha=NULL,Z_2=NULL){
   W_ast <- W_W2_update$W_ast
   W_ast_var <- W_W2_update$W_ast_var
   
-  pred_mean <- cbind(1,W_ast)%*%mod$coef
-  Var_train <- mod$VCV[1,1] + mod$VCV[2,2]*W_ast_var + mod$VCV[2,2]*W_ast^2+ mod$coef[2]^2*W_ast_var + 2*W_ast*mod$VCV[1,2]
+  if(!is.null(X)){X <- as.matrix(X)}
+  mod_mat <- cbind(1,W_ast,X)
+  pred_mean <- mod_mat%*%mod$coef
+  Var_train <- diag(mod_mat%*%mod$VCV%*%t(mod_mat)) + (mod$VCV[2,2] + mod$coef[2]^2)*W_ast_var
+  
   pred_res <- data.frame(Pred=pred_mean,Var=Var_train)
   CI_train <- PI_train <- NULL
   if(!is.null(alpha)){
